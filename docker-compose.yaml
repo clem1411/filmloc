@@ -248,9 +248,11 @@ services:
     ports:
       - 8888:8888
     volumes:
-       - ./:/home/jovyan/work/data
+       - ./:/home/jovyan/work
     environment:
       - GRANT_SUDO=yes
+      - CHOWN_HOME=yes
+      - CHOWN_HOME_OPTS=-R
       
 
 
