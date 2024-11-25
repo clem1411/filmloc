@@ -8,6 +8,9 @@
 
 logs/*
 plugins/*
+neo4j/*
+results/*
+
 
 # Emacs files
 *~

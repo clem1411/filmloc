@@ -1,0 +1,13 @@
+beautifulsoup4==4.11.1
+redis==4.3.4
+apache-airflow[postgres, mongo, neo4j]
+pyarrow
+py2neo
+apache-airflow-providers-papermill
+ipykernel
+matplotlib
+networkx
+neo4jupyter
+ipython-cypher
+#nbconvert
+#imgkit
