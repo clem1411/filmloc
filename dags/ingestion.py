@@ -21,7 +21,8 @@ import pandas as pd
 
 REDIS_HOST="redis"
 REDIS_PORT=6379
-REDIS_DB=0
+REDIS_DB=1
+
 
 
 default_args_dict = {
@@ -186,13 +187,22 @@ def _find_all_filming_narrative_location_with_wikidata(
 
     output = []
     i = 0
-    
+    stop = 0
     for title in movie_titles:
 
+        if stop >= 5:
+            break
+        else:
+            stop += 1
+
+        title = title.decode('utf-8')
+        
         output.append({'title': title})
 
         # filming location
         res = _get_filming_location_with_wikidata(title, endpoint, url)
+
+        print(res)
 
         # Save in hashes with this format (key = title:filmingLocation, field=number, value) + one special field count that indicates the total number of filming location
         cpt = 0
@@ -206,11 +216,13 @@ def _find_all_filming_narrative_location_with_wikidata(
         # narrative location
         res = _get_narrative_location_with_wikidata(title, endpoint, url)
 
+        print(res)
+
         cpt = 0
-        output[i]['filmingLocation'] = []
+        output[i]['narrativeLocation'] = []
         for temp in res["results"]["bindings"]:
             client.hset(f"{title}:narrativeLocation", str(cpt), temp["narrativeLocationLabel"]["value"])
-            output[i]['filmingLocation'].append(temp["filmingLocationLabel"]["value"])
+            output[i]['narrativeLocation'].append(temp["narrativeLocationLabel"]["value"])
             cpt += 1
         client.hset(f"{title}:narrativeLocation", "count", cpt)
 
