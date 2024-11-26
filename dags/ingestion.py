@@ -257,6 +257,75 @@ connection_check_node >> [online_sources_node, offline_sources_node]
 
 online_sources_node >> movie_titles_node >> wikidata_location_node
 
+#################################
+
+
+def _ask_ai_monuments_places(
+        redis_input_key: str,
+        filepath_output: str,
+        redis_host: str,
+        redis_port: str,
+        redis_db: str,
+        api_key: str,
+        url: str,
+) -> None:
+
+    # Get the movie titles saved in redis
+    client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+    movie_titles = client.smembers(redis_input_key)
+
+    for title in movie_titles:
+
+        title = title.decode('utf-8')
+
+        # Get all filming location for the title
+        filmingLocations = []
+        for i in range(0, client.hget(f"{title}:filmingLocation", "count")):
+            filmingLocations.append( client.hget(f"{title}:filmingLocation", str(i)) )
+
+
+        # ai headers
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+
+            
+        # ai data
+        data = {
+            "messages": [
+                {"role": "system", "content": "You are a movie specialist."},
+                {"role": "user", "content": f"Give me only the famous monuments and places appearing in {title} given that it takes place in those locations {', '.join(filmingLocations)}. The output format is just a list without any description. Each places and monuments should be between @."}
+            ],
+            "model": "grok-beta",
+            "stream": False,
+            "temperature": 0
+        }
+
+        print(f"Movie: {title}, Cities: {', '.join(filmingLocations)}")
+
+        # [TODO] execute request and create json and add to redis
+    
+
+
+ai_node = PythonOperator(
+    task_id="ask_ai",
+    dag=ingestion_dag,
+    trigger_rule='all_success',
+    python_callable=_ask_ai_monuments_places,
+    op_kwargs={
+        "redis_input_key": "movie_titles",
+        "filepath_output": "/opt/airflow/data/offline_ai_locations.json",
+        "redis_host": REDIS_HOST,
+        "redis_port": REDIS_PORT,
+        "redis_db": REDIS_DB,
+        "api_key": "toto",
+        "url": "https://api.x.ai/v1/chat/completions",
+    },
+    depends_on_past=False,
+)
+
+    
 #####################################
 
 #def _scrap_disstrack_dbpedia(
