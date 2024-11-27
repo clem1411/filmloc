@@ -1,1 +1,44 @@
-[{"title": "8 femmes"}, {"title": "The Rookie"}, {"title": "My Date with Drew"}, {"title": "Black Mass"}, {"title": "Vampires Suck"}]
+[
+    {
+        "title": "Force 10 from Navarone",
+        "places": [
+            "Jersey",
+            "Plymouth",
+            "Malta"
+        ]
+    },
+    {
+        "title": "Viy",
+        "places": [
+            "St. Sophia Cathedral",
+            "Kiev Pechersk Lavra"
+        ]
+    },
+    {
+        "title": "A Christmas Story",
+        "places": [
+            "Higbee's Department Store",
+            "Cleveland Public Auditorium",
+            "Cleveland Union Terminal",
+            "Casa Loma"
+        ]
+    },
+    {
+        "title": "I Heart Huckabees",
+        "places": [
+            "Hollywood Sign",
+            "La Brea Tar Pits",
+            "Santa Monica Pier"
+        ]
+    },
+    {
+        "title": "Memoirs of an Invisible Man",
+        "places": [
+            "Union Square",
+            "Transamerica Pyramid",
+            "Golden Gate Bridge",
+            "San Francisco Museum of Modern Art",
+            "Coit Tower"
+        ]
+    }
+]

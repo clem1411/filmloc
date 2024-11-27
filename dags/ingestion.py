@@ -78,6 +78,7 @@ def _load_JSON_wikidata(
         client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
 
         for da in data:
+            title = da['title']
             cpt = 0
             for loc in da["filmingLocation"]:
                 client.hset(f"{title}:filmingLocation", str(cpt), loc)
@@ -104,7 +105,7 @@ def _load_JSON_wikidata(
 load_wikidata_node = PythonOperator(
     task_id="load_wikidata_json",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_load_JSON_wikidata,
     op_kwargs={
         "filepath_input": "/opt/airflow/data/offline_wikidata_locations.json",
@@ -131,6 +132,7 @@ def _load_JSON_ai(
         client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
 
         for da in data:
+            title = da['title']
             cpt = 0
             for loc in da["places"]:
                 client.hset(f"{title}:places", str(cpt), loc)
@@ -151,7 +153,7 @@ def _load_JSON_ai(
 load_ai_node = PythonOperator(
     task_id="load_ai_json",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_load_JSON_ai,
     op_kwargs={
         "filepath_input": "/opt/airflow/data/offline_ai_locations.json",
@@ -191,10 +193,25 @@ def _extract_and_load_movies_titles(
         r.sadd(redis_output_key, title)
 
 
-movie_titles_node = PythonOperator(
-    task_id="movie_titles_loading",
+movie_titles_node_online = PythonOperator(
+    task_id="movie_titles_loading_online",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
+    python_callable=_extract_and_load_movies_titles,
+    op_kwargs={
+        "filepath_input": "/opt/airflow/data/temp.csv",
+        "redis_output_key": "movie_titles",
+        "redis_host": REDIS_HOST,
+        "redis_port": REDIS_PORT,
+        "redis_db": REDIS_DB,
+    },
+    depends_on_past=False,
+)
+
+movie_titles_node_offline = PythonOperator(
+    task_id="movie_titles_loading_offline",
+    dag=ingestion_dag,
+    trigger_rule="one_success",
     python_callable=_extract_and_load_movies_titles,
     op_kwargs={
         "filepath_input": "/opt/airflow/data/temp.csv",
@@ -359,7 +376,7 @@ def _find_all_filming_narrative_location_with_wikidata(
 wikidata_location_node = PythonOperator(
     task_id="wikidata_location",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_find_all_filming_narrative_location_with_wikidata,
     op_kwargs={
         "redis_input_key": "movie_titles",
@@ -464,7 +481,7 @@ def _ask_ai_monuments_places(
 ai_node = PythonOperator(
     task_id="ask_ai",
     dag=ingestion_dag,
-    trigger_rule='all_success',
+    trigger_rule='one_success',
     python_callable=_ask_ai_monuments_places,
     op_kwargs={
         "redis_input_key": "movie_titles",
@@ -509,7 +526,7 @@ def _mongodb_saver_csv(
 mongo_csv_node = PythonOperator(
     task_id="mongodb_saver_csv",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_mongodb_saver_csv,
     op_kwargs={
         "filepath_input": "/opt/airflow/data/temp.csv",
@@ -576,7 +593,7 @@ def _mongodb_saver_wikidata(
 mongo_wikidata_node = PythonOperator(
     task_id="mongodb_saver_wikidata",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_mongodb_saver_wikidata,
     op_kwargs={
         "redis_input_key": "movie_titles",
@@ -622,9 +639,12 @@ def _mongodb_saver_ai(
         # Convert hash data to dict
         aiDict = {field.decode('utf-8'): value.decode('utf-8') for field, value in ai_places.items()}
 
+        if 'count' in aiDict:
+            aiDict.pop('count')
+
         # Convert dict to JSON
 
-        final_json = {'title': title, 'places': json.dumps(aiDict, indent=4)}
+        final_json = {'title': title, 'places': list(aiDict.values())}
 
         # Add document to collection MongoDB
         collection.insert_one(final_json)
@@ -637,7 +657,7 @@ def _mongodb_saver_ai(
 mongo_ai_node = PythonOperator(
     task_id="mongodb_saver_ai",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_mongodb_saver_ai,
     op_kwargs={
         "redis_input_key": "movie_titles",
@@ -679,7 +699,7 @@ def _delete_mongodb_ingestion(
 mongo_delete_node = PythonOperator(
     task_id="mongodb_delete_ingestion",
     dag=ingestion_dag,
-    trigger_rule="all_success",
+    trigger_rule="one_success",
     python_callable=_delete_mongodb_ingestion,
     op_kwargs={
         "mongo_host": MONGO_HOST,
@@ -708,12 +728,12 @@ intermediate_offline_node = EmptyOperator(
 connection_check_node >> [online_sources_node, offline_sources_node]
 
 #offline part
-offline_sources_node >> [movie_titles_node, load_ai_node, load_wikidata_node]
+offline_sources_node >> [movie_titles_node_offline, load_ai_node, load_wikidata_node]
 
-[movie_titles_node, load_ai_node, load_wikidata_node] >> intermediate_offline_node >> mongo_delete_node >>[mongo_csv_node, mongo_wikidata_node, mongo_ai_node]
+[movie_titles_node_offline, load_ai_node, load_wikidata_node] >> intermediate_offline_node >> mongo_delete_node >>[mongo_csv_node, mongo_wikidata_node, mongo_ai_node]
 
 #online part
-online_sources_node >> movie_titles_node >> wikidata_location_node
+online_sources_node >> movie_titles_node_online >> wikidata_location_node
 
 wikidata_location_node >> ai_node >> mongo_delete_node
 
