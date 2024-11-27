@@ -9,5 +9,6 @@ matplotlib
 networkx
 neo4jupyter
 ipython-cypher
+python-dotenv
 #nbconvert
 #imgkit
