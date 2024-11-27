@@ -257,8 +257,6 @@ connection_check_node >> [online_sources_node, offline_sources_node]
 
 online_sources_node >> movie_titles_node >> wikidata_location_node
 
-#################################
-
 
 def _ask_ai_monuments_places(
         redis_input_key: str,
@@ -274,14 +272,24 @@ def _ask_ai_monuments_places(
     client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
     movie_titles = client.smembers(redis_input_key)
 
+    stop = 0
+    output = []
+    i = 0
     for title in movie_titles:
 
+        if stop >= 5:
+            break
+        else:
+            stop += 1
+        
         title = title.decode('utf-8')
+
+        output.append({'title': title})
 
         # Get all filming location for the title
         filmingLocations = []
-        for i in range(0, client.hget(f"{title}:filmingLocation", "count")):
-            filmingLocations.append( client.hget(f"{title}:filmingLocation", str(i)) )
+        for i in range(0, int(client.hget(f"{title}:filmingLocation", "count"))):
+            filmingLocations.append( client.hget(f"{title}:filmingLocation", str(i)).decode('utf-8') )
 
 
         # ai headers
@@ -304,7 +312,39 @@ def _ask_ai_monuments_places(
 
         print(f"Movie: {title}, Cities: {', '.join(filmingLocations)}")
 
-        # [TODO] execute request and create json and add to redis
+
+
+        # execute request
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+
+        if response.status_code == 200:
+            # Extract places from the response
+            text = response.text
+            places = re.findall(r'@([^@]+)@', text)  # Remove @ symbols during extraction
+            new_places = {place.strip() for place in places if place.strip()}  # Use a set for uniqueness
+
+
+            # add places to the output json
+            output[i]['places'] = new_places
+
+            # add key title:places with the places and the count
+            cpt = 0
+            for pl in new_places:
+                client.hset(f"{title}:places", str(cpt), pl)
+                cpt += 1
+            
+            
+            print(f"Movie '{title}' updated successfully.")
+        else:
+            print(f"Error {response.status_code}: {response.text}")
+
+        i += 1
+
+    # Persist the data in a json in case no connection is available next time
+    with open(filepath_output, "w+", encoding="utf-8") as f:
+        json.dump(output, f)
+    
+
     
 
 
@@ -325,6 +365,8 @@ ai_node = PythonOperator(
     depends_on_past=False,
 )
 
+
+wikidata_location_node >> ai_node
     
 #####################################
 
