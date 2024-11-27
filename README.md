@@ -1,9 +1,9 @@
-### Data engineering project
+# Data engineering project
 
-# Famous places appearing in movies and their impact on the movie rating
+## Famous places appearing in movies and their impact on the movie rating
 
-Students : Julien BONDYFALAT & Clément VIAL
-Teacher : Riccardo TOMMASINI
+Students : Julien BONDYFALAT & Clément VIAL\n
+Teacher : Riccardo TOMMASINI \n
 Course : Foundations of Data Engineering https://www.riccardotommasini.com/courses/dataeng-insa-ot/
 
 ## Project presentation
