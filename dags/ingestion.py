@@ -18,11 +18,23 @@ from airflow.operators.empty import EmptyOperator
 
 import pandas as pd
 
+from dotenv import load_dotenv
+import os
+import re
+
+
+
 
 REDIS_HOST="redis"
 REDIS_PORT=6379
 REDIS_DB=1
 
+
+# Load environment variables from .env file
+load_dotenv('/opt/airflow/dags/.env', override=True)
+
+# Get the API key from the environment variable
+API_KEY = os.getenv('API_KEY')
 
 
 default_args_dict = {
@@ -264,7 +276,6 @@ def _ask_ai_monuments_places(
         redis_host: str,
         redis_port: str,
         redis_db: str,
-        api_key: str,
         url: str,
 ) -> None:
 
@@ -273,10 +284,8 @@ def _ask_ai_monuments_places(
     movie_titles = client.smembers(redis_input_key)
 
     stop = 0
-    output = []
-    i = 0
+    output = []  # Initialize output as an empty list
     for title in movie_titles:
-
         if stop >= 5:
             break
         else:
@@ -284,26 +293,28 @@ def _ask_ai_monuments_places(
         
         title = title.decode('utf-8')
 
-        output.append({'title': title})
+        # Initialize movie data
+        movie_data = {'title': title}
 
-        # Get all filming location for the title
+        # Get all filming locations for the title
         filmingLocations = []
-        for i in range(0, int(client.hget(f"{title}:filmingLocation", "count"))):
-            filmingLocations.append( client.hget(f"{title}:filmingLocation", str(i)).decode('utf-8') )
+        filming_count = int(client.hget(f"{title}:filmingLocation", "count"))
+        for i in range(filming_count):
+            location = client.hget(f"{title}:filmingLocation", str(i))
+            if location:
+                filmingLocations.append(location.decode('utf-8'))
 
-
-        # ai headers
+        # AI headers
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
+            "Authorization": f"{API_KEY}",
         }
 
-            
-        # ai data
+        # AI request data
         data = {
             "messages": [
                 {"role": "system", "content": "You are a movie specialist."},
-                {"role": "user", "content": f"Give me only the famous monuments and places appearing in {title} given that it takes place in those locations {', '.join(filmingLocations)}. The output format is just a list without any description. Each places and monuments should be between @."}
+                {"role": "user", "content": f"Give me only the famous monuments and places appearing in {title} given that it takes place in those locations {', '.join(filmingLocations)}. The output format is just a list without any description. Each place and monument should be between @."}
             ],
             "model": "grok-beta",
             "stream": False,
@@ -312,37 +323,32 @@ def _ask_ai_monuments_places(
 
         print(f"Movie: {title}, Cities: {', '.join(filmingLocations)}")
 
-
-
-        # execute request
+        # Execute the request
         response = requests.post(url, headers=headers, data=json.dumps(data))
 
         if response.status_code == 200:
             # Extract places from the response
             text = response.text
-            places = re.findall(r'@([^@]+)@', text)  # Remove @ symbols during extraction
+            places = re.findall(r'@([^@]+)@', text)  # Extract places between @ symbols
             new_places = {place.strip() for place in places if place.strip()}  # Use a set for uniqueness
 
+            # Add places to the movie data
+            movie_data['places'] = list(new_places)
 
-            # add places to the output json
-            output[i]['places'] = new_places
-
-            # add key title:places with the places and the count
-            cpt = 0
-            for pl in new_places:
+            # Add key title:places with the places and the count to Redis
+            for cpt, pl in enumerate(new_places):
                 client.hset(f"{title}:places", str(cpt), pl)
-                cpt += 1
-            
             
             print(f"Movie '{title}' updated successfully.")
         else:
             print(f"Error {response.status_code}: {response.text}")
 
-        i += 1
+        # Append the movie data to the output
+        output.append(movie_data)
 
     # Persist the data in a json in case no connection is available next time
     with open(filepath_output, "w+", encoding="utf-8") as f:
-        json.dump(output, f)
+        json.dump(output, f, ensure_ascii=False, indent=4)
     
 
     
@@ -359,7 +365,6 @@ ai_node = PythonOperator(
         "redis_host": REDIS_HOST,
         "redis_port": REDIS_PORT,
         "redis_db": REDIS_DB,
-        "api_key": "toto",
         "url": "https://api.x.ai/v1/chat/completions",
     },
     depends_on_past=False,
