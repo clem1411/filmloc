@@ -275,7 +275,12 @@ def _get_filming_location_with_wikidata(movie_title: str, endpoint: str, url: st
             f"{url}{endpoint}", params={"format": "json", "query": sparql_query}
         )
         
-    return r.json()
+    try :
+        return r.json()
+    except json.JSONDecodeError as e:
+        print(f"Erreur JSONDecodeError : {e}")
+        print(f"Contenu brut de la réponse : {r.text}")
+        return None  # Ou une valeur par défaut
 
 def _get_narrative_location_with_wikidata(movie_title: str, endpoint: str, url: str):
 
@@ -304,8 +309,12 @@ def _get_narrative_location_with_wikidata(movie_title: str, endpoint: str, url: 
         r = requests.get(
             f"{url}{endpoint}", params={"format": "json", "query": sparql_query}
         )
-        
-    return r.json()
+    try :
+        return r.json()
+    except json.JSONDecodeError as e:
+        print(f"Erreur JSONDecodeError : {e}")
+        print(f"Contenu brut de la réponse : {r.text}")
+        return None  # Ou une valeur par défaut
 
 
 
@@ -326,51 +335,65 @@ def _find_all_filming_narrative_location_with_wikidata(
     output = []
     i = 0
     stop = 0
+
+    if os.path.exists(filepath_output):
+        with open(filepath_output, "r", encoding="utf-8") as f:
+            try:
+                existing_data = json.load(f)
+            except json.JSONDecodeError:
+                existing_data = []
+    else:
+        existing_data = []
+
     for title in movie_titles:
-
-        if stop >= 5:
-            break
-        else:
-            stop += 1
-
         title = title.decode('utf-8')
+        found = any(entry["title"] == title for entry in existing_data)
+        if not found:
+            if stop >= 5:
+                break
+            else:
+                stop += 1
+                print(stop)
+
+            output.append({'title': title})
+
+            # filming location
+            res = _get_filming_location_with_wikidata(title, endpoint, url)
+
+            print(res)
+
+            # Save in hashes with this format (key = title:filmingLocation, field=number, value) + one special field count that indicates the total number of filming location
+            output[i]['filmingLocation'] = []
+            if(res is not None):
+                cpt = 0
+                for temp in res["results"]["bindings"]:
+                    client.hset(f"{title}:filmingLocation", str(cpt), temp["filmingLocationLabel"]["value"])
+                    output[i]['filmingLocation'].append(temp["filmingLocationLabel"]["value"])
+                    cpt += 1
+                client.hset(f"{title}:filmingLocation", "count", cpt)
+
+            # narrative location
+            res = _get_narrative_location_with_wikidata(title, endpoint, url)
+
+            print(res)
+
+            output[i]['narrativeLocation'] = []
+            if(res is not None):
+                cpt = 0
+                for temp in res["results"]["bindings"]:
+                    client.hset(f"{title}:narrativeLocation", str(cpt), temp["narrativeLocationLabel"]["value"])
+                    output[i]['narrativeLocation'].append(temp["narrativeLocationLabel"]["value"])
+                    cpt += 1
+                client.hset(f"{title}:narrativeLocation", "count", cpt)
+
+
+            i += 1
         
-        output.append({'title': title})
-
-        # filming location
-        res = _get_filming_location_with_wikidata(title, endpoint, url)
-
-        print(res)
-
-        # Save in hashes with this format (key = title:filmingLocation, field=number, value) + one special field count that indicates the total number of filming location
-        cpt = 0
-        output[i]['filmingLocation'] = []
-        for temp in res["results"]["bindings"]:
-            client.hset(f"{title}:filmingLocation", str(cpt), temp["filmingLocationLabel"]["value"])
-            output[i]['filmingLocation'].append(temp["filmingLocationLabel"]["value"])
-            cpt += 1
-        client.hset(f"{title}:filmingLocation", "count", cpt)
-
-        # narrative location
-        res = _get_narrative_location_with_wikidata(title, endpoint, url)
-
-        print(res)
-
-        cpt = 0
-        output[i]['narrativeLocation'] = []
-        for temp in res["results"]["bindings"]:
-            client.hset(f"{title}:narrativeLocation", str(cpt), temp["narrativeLocationLabel"]["value"])
-            output[i]['narrativeLocation'].append(temp["narrativeLocationLabel"]["value"])
-            cpt += 1
-        client.hset(f"{title}:narrativeLocation", "count", cpt)
-
-
-        i += 1
         
-        
-    # Persist the data in a json in case no connection is available next time
-    with open(filepath_output, "w+", encoding="utf-8") as f:
-        json.dump(output, f)
+    existing_data.extend(output)
+
+    with open(filepath_output, "w", encoding="utf-8") as f:
+        json.dump(existing_data, f, ensure_ascii=False, indent=4)
 
 
 wikidata_location_node = PythonOperator(
@@ -406,15 +429,15 @@ def _ask_ai_monuments_places(
     # Get the movie titles saved in redis
     client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
     movie_titles = client.smembers(redis_input_key)
-
     stop = 0
     output = []  # Initialize output as an empty list
     for title in movie_titles:
-        if stop >= 5:
+        if stop >= 100000:
             break
         else:
             stop += 1
         
+        sleep(3) # Sleep for 3 seconds to avoid rate limiting (1200/hour)
         title = title.decode('utf-8')
 
         # Initialize movie data
@@ -422,7 +445,16 @@ def _ask_ai_monuments_places(
 
         # Get all filming locations for the title
         filmingLocations = []
-        filming_count = int(client.hget(f"{title}:filmingLocation", "count"))
+        try:
+            # Récupération de la valeur et tentative de conversion en entier
+            filming_count = client.hget(f"{title}:filmingLocation", "count")
+            if filming_count is None:
+                raise ValueError(f"Count is None for {title}:filmingLocation")
+            filming_count = int(filming_count)
+        except (TypeError, ValueError) as e:
+            # Gestion des erreurs pour None ou conversion échouée
+            print(f"Error retrieving or converting filming count: {e}")
+            filming_count = 0  # Valeur par défaut
         for i in range(filming_count):
             location = client.hget(f"{title}:filmingLocation", str(i))
             if location:
@@ -446,6 +478,7 @@ def _ask_ai_monuments_places(
         }
 
         print(f"Movie: {title}, Cities: {', '.join(filmingLocations)}")
+        print(data)
 
         # Execute the request
         response = requests.post(url, headers=headers, data=json.dumps(data))
