@@ -199,7 +199,7 @@ movie_titles_node_online = PythonOperator(
     trigger_rule="one_success",
     python_callable=_extract_and_load_movies_titles,
     op_kwargs={
-        "filepath_input": "/opt/airflow/data/temp.csv",
+        "filepath_input": "/opt/airflow/data/movie-rating-cleaned.csv",
         "redis_output_key": "movie_titles",
         "redis_host": REDIS_HOST,
         "redis_port": REDIS_PORT,
@@ -214,7 +214,7 @@ movie_titles_node_offline = PythonOperator(
     trigger_rule="one_success",
     python_callable=_extract_and_load_movies_titles,
     op_kwargs={
-        "filepath_input": "/opt/airflow/data/temp.csv",
+        "filepath_input": "/opt/airflow/data/movie-rating-cleaned.csv",
         "redis_output_key": "movie_titles",
         "redis_host": REDIS_HOST,
         "redis_port": REDIS_PORT,
@@ -562,7 +562,7 @@ mongo_csv_node = PythonOperator(
     trigger_rule="one_success",
     python_callable=_mongodb_saver_csv,
     op_kwargs={
-        "filepath_input": "/opt/airflow/data/temp.csv",
+        "filepath_input": "/opt/airflow/data/movie-rating-cleaned.csv",
         "mongo_host": MONGO_HOST,
         "mongo_port": MONGO_PORT,
         "mongo_database": MONGO_DB,
