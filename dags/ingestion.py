@@ -134,9 +134,10 @@ def _load_JSON_ai(
         for da in data:
             title = da['title']
             cpt = 0
-            for loc in da["places"]:
-                client.hset(f"{title}:places", str(cpt), loc)
-                cpt += 1
+            if 'places' in da:
+                for loc in da["places"]:
+                    client.hset(f"{title}:places", str(cpt), loc)
+                    cpt += 1
 
             client.hset(f"{title}:places", "count", cpt)
 
