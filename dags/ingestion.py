@@ -45,7 +45,7 @@ default_args_dict = {
     "concurrency": 1,
     "schedule_interval": "0 0 * * *",  # Every day at midnight
     "retries": 1,
-    "retry_delay": datetime.timedelta(minutes=5),
+    "retry_delay": datetime.timedelta(seconds=30),
 }
 
 ingestion_dag = DAG(
