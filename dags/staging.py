@@ -19,6 +19,10 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.empty import EmptyOperator
 
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 import os
 import re
@@ -103,12 +107,12 @@ load_ai_places_node = PythonOperator(
 
 
 load_wikidata_locations_node = PythonOperator(
-    task_id="load_wikidata_locations",
+    task_id="load_wikidata_location",
     dag=staging_dag,
     trigger_rule="one_success",
     python_callable=_load_data_from_mongodb,
     op_kwargs={
-        "redis_output_key": "wikidata_locations",
+        "redis_output_key": "wikidata_location",
         "redis_host": REDIS_HOST,
         "redis_port": REDIS_PORT,
         "redis_db": REDIS_DB,
@@ -164,6 +168,7 @@ def _prepare_movie_data(
     df = df.drop_duplicates()
 
     # index = id
+    df = df.reset_index(drop=True)
     df['id'] = df.index
 
     # store in redis
@@ -310,7 +315,239 @@ prepare_production_companies_data_node = PythonOperator(
 )
 
 
-###########################################################
+preparation_finish_node = EmptyOperator(
+    task_id="preparation_finish", dag=staging_dag, trigger_rule="all_success"
+)
+
+
+
+### MERGE LOCATIONS AND PLACES TO OBTAIN ONE DATAFRAME
+
+def _merge_places_locations(
+        redis_output_key: str,
+        redis_input_key_locations:str,
+        redis_input_key_places:str,
+        redis_host: str,
+        redis_port: str,
+        redis_db: str,
+):
+
+    redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+    context = pa.default_serialization_context()
+
+    # Get raw data
+    wikidata_location = context.deserialize(redis_client.get(redis_input_key_locations))
+    ai_places = context.deserialize(redis_client.get(redis_input_key_places))
+    wikidata_location_df = pd.DataFrame(wikidata_location)
+    ai_places_df = pd.DataFrame(ai_places)
+
+    # First clean raw data
+    wikidata_location_df = wikidata_location_df.drop(['_id'], axis=1)
+    ai_places_df = ai_places_df.drop(['_id'], axis=1)
+
+    # Merge
+    merged_df = pd.merge(wikidata_location_df, ai_places_df, how='outer', on=["title"])
+
+
+    # Clean
+    merged_df = merged_df.dropna(thresh=2) # garde les lignes avec au moins 2 non null
+
+    # Add movie id
+    movies_df = pd.DataFrame(context.deserialize(redis_client.get("movies_data")))
+    movies_df = movies_df.rename(columns={'original_title': 'title'})
+    final_df = pd.merge(merged_df, movies_df[['title','id']], how='right', on='title')
+
+    # saving result to redis
+    redis_client.set(redis_output_key, context.serialize(final_df).to_buffer().to_pybytes())
+
+
+merge_places_locations_node = PythonOperator(
+    task_id="merge_places_locations",
+    dag=staging_dag,
+    trigger_rule="all_success",
+    python_callable=_merge_places_locations,
+    op_kwargs={
+        "redis_output_key": "separated_loc_data",
+        "redis_input_key_locations": "wikidata_location",
+        "redis_input_key_places" : "ai_places",
+        "redis_host": REDIS_HOST,
+        "redis_port": REDIS_PORT,
+        "redis_db": REDIS_DB,
+    },
+    depends_on_past=False,
+)
+
+
+### WORK ON LOCATION
+
+def _merge_loc_data(
+        redis_output_key: str,
+        redis_input_key_loc: str,
+        redis_host: str,
+        redis_port: str,
+        redis_db: str,
+):
+
+    redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+    context = pa.default_serialization_context()
+
+    # Get loc data
+    separated_loc = context.deserialize(redis_client.get(redis_input_key_loc))
+    separated_loc_df = pd.DataFrame(separated_loc)
+
+
+    # Switch  NaN to empty list
+    separated_loc_df['filmingLocation'] = separated_loc_df['filmingLocation'].apply(lambda x: x if isinstance(x, list) else [])
+    separated_loc_df['narrativeLocation'] = separated_loc_df['narrativeLocation'].apply(lambda x: x if isinstance(x, list) else [])
+    separated_loc_df['places'] = separated_loc_df['places'].apply(lambda x: x if isinstance(x, list) else [])
+
+    # Concat  3 list columns  (filmingLocation, narrativeLocation, places)
+    separated_loc_df['location'] = separated_loc_df['filmingLocation'] + separated_loc_df['narrativeLocation'] + separated_loc_df['places']
+
+    # Create DataFrame with columns 'title', 'id' and 'location'
+    merged_loc_df = separated_loc_df[['title', 'id', 'location']]
+
+    # saving result to redis
+    redis_client.set(redis_output_key, context.serialize(merged_loc_df).to_buffer().to_pybytes())
+
+
+merge_loc_node = PythonOperator(
+    task_id="merge_loc",
+    dag=staging_dag,
+    trigger_rule="all_success",
+    python_callable=_merge_loc_data,
+    op_kwargs={
+        "redis_output_key": "merged_loc_data",
+        "redis_input_key_loc": "separated_loc_data",
+        "redis_host": REDIS_HOST,
+        "redis_port": REDIS_PORT,
+        "redis_db": REDIS_DB,
+    },
+    depends_on_past=False,
+)
+
+def clustering_locations(location_df):
+
+
+    locations_list = list(set(location_df['location']))
+    print(len(locations_list))
+    
+    # Step 1 : Transform locations to TF-IDF vectors
+    vectorizer = TfidfVectorizer(stop_words='english')
+    X = vectorizer.fit_transform(locations_list)
+
+    # Step 2 : Compute cosine similarity
+    similarity_matrix = cosine_similarity(X)
+
+    # Step 3 : Convert similarity to distance
+    distance_matrix = 1 - similarity_matrix
+
+    # Force negative values to zero to avoid error
+    distance_matrix[distance_matrix < 0] = 0
+    
+    # Step 4 : Clustering with DBSCAN
+    # - eps : distance maximale entre les points dans un cluster
+    # - min_samples : nombre minimal de points dans un cluster
+    
+    db = DBSCAN(metric="precomputed", eps=0.15, min_samples=1)
+    labels = db.fit_predict(distance_matrix)
+    
+
+    # Step 5 : Create clusters
+    clusters = {}
+    for i, label in enumerate(labels):
+        if label != -1:  # Ignorer le bruit (-1 signifie bruit)
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(locations_list[i])
+
+
+    # Step 6 : Select the location with the fewest characters for each cluster 
+    locations_dict = dict() # old location -> id of the new location
+    unique_locations = [] # list of new location
+    cpt_id = 0 # actual id
+    for label, cluster in clusters.items():
+        if len(cluster) > 1:  # If the cluster contains more than 1 element
+            
+            min_location = min(cluster, key=len) 
+            unique_locations.append(min_location)
+            for c in cluster:
+                locations_dict[c] = cpt_id
+        else:
+            unique_locations.append(cluster[0]) 
+            locations_dict[cluster[0]] = cpt_id
+
+        cpt_id += 1 #increment id
+
+
+            
+    # Step 7 : Create a new dataframe with unique locations
+    df_unique_locations = pd.DataFrame({
+        'location': unique_locations,
+        'id': [locations_dict[loc] for loc in unique_locations],
+    })
+
+
+    # Step 8 : Replace text value by id
+    location_df['location'] = location_df['location'].replace(locations_dict)
+
+    # Return the location table and relation table
+    return df_unique_locations, location_df
+
+
+    
+
+def _prepare_locations_data(
+        redis_output_key_loc: str,
+        redis_output_key_relation: str,
+        redis_input_key_loc: str,
+        redis_host: str,
+        redis_port: str,
+        redis_db: str,
+):
+
+    redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+    context = pa.default_serialization_context()
+
+    # Get loc data
+    loc = context.deserialize(redis_client.get(redis_input_key_loc))
+    loc_df = pd.DataFrame(loc)
+
+    # Explode lists in the 'location' column to have one line per location
+    loc_exploded_df = loc_df.explode('location', ignore_index=True)
+    
+    # Remove NaN values
+    loc_exploded_df = loc_exploded_df.dropna(subset=['location']).reset_index(drop=True)
+
+    # Clustering locations to remove duplicated values and replace values by id in the relation df
+    unique_loc_df, relation_loc_df = clustering_locations(loc_exploded_df)
+
+    
+    # saving result to redis
+    redis_client.set(redis_output_key_loc, context.serialize(unique_loc_df).to_buffer().to_pybytes())
+    redis_client.set(redis_output_key_relation, context.serialize(relation_loc_df).to_buffer().to_pybytes())
+    
+prepare_locations_data_node = PythonOperator(
+    task_id="prepare_locations_data",
+    dag=staging_dag,
+    trigger_rule="all_success",
+    python_callable=_prepare_locations_data,
+    op_kwargs={
+        "redis_output_key_loc": "locations_data",
+        "redis_output_key_relation": "movies-locations_data",
+        "redis_input_key_loc": "merged_loc_data",
+        "redis_host": REDIS_HOST,
+        "redis_port": REDIS_PORT,
+        "redis_db": REDIS_DB,
+    },
+    depends_on_past=False,
+)
+
+
+
+
+
+########################################################
 
 
 def test(
@@ -321,11 +558,11 @@ def test(
 
     redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
     context = pa.default_serialization_context()
-    data = context.deserialize(redis_client.get("production_companies_data"))
+    data = context.deserialize(redis_client.get("locations_data"))
     
-    genres_df = pd.DataFrame(data)
+    df = pd.DataFrame(data)
 
-    print(genres_df)
+    print(df.head(20))
 
 
 test_node = PythonOperator(
@@ -343,7 +580,9 @@ test_node = PythonOperator(
     
 
 start_node >> [load_ai_places_node, load_wikidata_locations_node, load_movies_csv_node] >> prepare_movies_data_node
-prepare_movies_data_node >> [prepare_genres_data_node, prepare_keywords_data_node, prepare_production_companies_data_node] >> test_node
+prepare_movies_data_node >> [prepare_genres_data_node, prepare_keywords_data_node, prepare_production_companies_data_node] >> preparation_finish_node
+
+preparation_finish_node >> merge_places_locations_node >> merge_loc_node >> prepare_locations_data_node >> test_node
 
 
 ################################################################
