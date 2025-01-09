@@ -38,6 +38,13 @@ MONGO_PORT="27017"
 MONGO_DB="ingestion"
 
 
+POSTGRES_HOST =  "postgres"
+POSTGRES_PORT =  5432
+POSTGRES_DB = "postgres"
+POSTGRES_USER = "airflow"
+POSTGRES_PSWD = "airflow"
+
+
 default_args_dict = {
     "start_date": datetime.datetime(2025, 1, 4, 0, 0, 0),
     "concurrency": 1,
@@ -823,11 +830,11 @@ save_postgres_node = PythonOperator(
         "redis_host": REDIS_HOST,
         "redis_port": REDIS_PORT,
         "redis_db": REDIS_DB,
-        "postgres_host": "postgres",
-        "postgres_port": 5432,
-        "postgres_db": "postgres",
-        "postgres_user": "airflow",
-        "postgres_pswd": "airflow",
+        "postgres_host": POSTGRES_HOST,
+        "postgres_port": POSTGRES_PORT,
+        "postgres_db": POSTGRES_DB,
+        "postgres_user": POSTGRES_USER,
+        "postgres_pswd": POSTGRES_PSWD,
     },
     depends_on_past=False,
 )
