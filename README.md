@@ -30,4 +30,4 @@ We wanted to work on data about movies and more importantly which factor could i
 
 The first dag is responsible for collecting the data. The choice that was made was to retrieve the data from kaggle then use these data for our query in wikidata and finally we use it in our prompt for Grok AI. The down half of the picture shows how the data is collected :
 
-![Ingestion graph](image.png)
+![Ingestion graph](images/ingestion.png)
