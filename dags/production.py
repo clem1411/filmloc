@@ -1,10 +1,18 @@
 import datetime
+from os import system
+from subprocess import CalledProcessError, check_output, STDOUT
+
+import pandas as pd
+
 from sqlalchemy import create_engine
 from py2neo import Graph
-import pandas as pd
+
 from airflow import DAG
+from airflow.providers.papermill.operators.papermill import PapermillOperator
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.operators.bash import BashOperator
+
 
 # PostgreSQL connection settings
 POSTGRES_HOST = "postgres"
@@ -38,8 +46,8 @@ start_node = EmptyOperator(
     task_id="start", dag=production_dag, trigger_rule="all_success"
 )
 
-# Function to create graph in Neo4j from PostgreSQL
-def _create_graph_from_postgres(
+### CREATE GRAPH IN NEO4J FROM POSTGRESQL
+def _create_graph_from_postgres_batch(
     pg_user: str,
     pg_pwd: str,
     pg_host: str,
@@ -47,123 +55,145 @@ def _create_graph_from_postgres(
     pg_db: str,
     neo_host: str,
     neo_port: str,
+    batch_size: int = 1000  # Taille des lots pour traiter les données par paquets
 ):
-    # PostgreSQL connection
+    # Connexion à PostgreSQL
     engine = create_engine(
         f'postgresql://{pg_user}:{pg_pwd}@{pg_host}:{pg_port}/{pg_db}'
     )
-    
-    # Create a Neo4j connection
+
+    # Connexion à Neo4j
     graph = Graph(f"bolt://{neo_host}:{neo_port}")
 
-    # Reset the database Neo4j
-    graph.delete_all()
-
-    # Start a transaction in Neo4j
-    tx = graph.begin()
-
-    # Query to fetch movies and their related data
+    # Interroger les films et leurs données associées
     query_movies = """
         SELECT m.id, m.original_title, m.release_date, m.runtime, m.vote_average, m.budget, m.revenue
         FROM movie m
     """
     df_movies = pd.read_sql(query_movies, con=engine)
-    
-    # Replace NaN values with None or a default value
+
+    # Nettoyer les données
     df_movies = df_movies.fillna({
         'runtime': 0,
+        'vote_average': 0,
+        'budget': 0,
+        'revenue': 0
     })
+    df_movies['release_date'] = pd.to_datetime(df_movies['release_date'], errors='coerce')
+    df_movies['release_date'] = df_movies['release_date'].fillna(pd.Timestamp('1970-01-01'))
 
-    # Replace NaT (Not a Time) in datetime columns with None (or another default date)
-    df_movies['release_date'] = pd.to_datetime(df_movies['release_date'], errors='coerce')  # Coerce invalid dates to NaT
-    df_movies['release_date'] = df_movies['release_date'].fillna(pd.Timestamp('1900-01-01'))  # Replace NaT with a default date
-
-    # Create movie nodes in Neo4j
-    for _, row in df_movies.iterrows():
-        tx.evaluate('''
-        MERGE (m:Movie {id: $id, original_title: $original_title, release_date: $release_date, runtime: $runtime, vote_average: $vote_average, budget: $budget, revenue: $revenue})
-        ''', parameters=row.to_dict())
-
-    # Query to fetch genres related to movies
-    query_genres = """
-    select mg.movie_id, g."name" as genre_name
-    from "movie-genre" mg 
-    join genre g ON g.id = mg.genre_id 
-    """
-    df_genres = pd.read_sql(query_genres, con=engine)
-    
-    # Create genre nodes and relationships
-    for _, row in df_genres.iterrows():
-        tx.evaluate('''
-        MATCH (m:Movie {id: $movie_id})
-        WITH m
-        MERGE (g:Genre {name: $genre_name})
-        MERGE (m)-[:HAS_GENRE]->(g)
-        ''', parameters={'genre_name': row['genre_name'], 'movie_id': row['movie_id']})
-        print(row)
+    # Boucle à travers les données par petits lots
+    for start in range(0, len(df_movies), batch_size):
+        batch = df_movies.iloc[start:start + batch_size]
         
-    ## Query to fetch keywords related to movies
-    #query_keywords = """
-    #    SELECT mk.movie_id, k."name" AS keyword_name
-    #    FROM "movie-keyword" mk
-    #    JOIN keyword k ON k.id = mk.keyword_id
-    #"""
-    #df_keywords = pd.read_sql(query_keywords, con=engine)
-    #
-    ## Create keyword nodes and relationships
-    #for _, row in df_keywords.iterrows():
-    #    tx.evaluate('''
-    #    MERGE (k:Keyword {name: $keyword_name})
-    #    MATCH (m:Movie {id: $movie_id})
-    #    WITH m
-    #    MERGE (m)-[:HAS_KEYWORD]->(k)
-    #    ''', parameters={'keyword_name': row['keyword_name'], 'movie_id': row['movie_id']})
-    #
-    ## Query to fetch locations related to movies
-    #query_locations = """
-    #    SELECT ml.movie_id, l."name" AS location_name
-    #    FROM "movie-location" ml
-    #    JOIN location l ON l.id = ml.location_id
-    #"""
-    #df_locations = pd.read_sql(query_locations, con=engine)
-    #
-    ## Create location nodes and relationships
-    #for _, row in df_locations.iterrows():
-    #    tx.evaluate('''
-    #    MERGE (l:Location {name: $location_name})
-    #    MATCH (m:Movie {id: $movie_id})
-    #    WITH m
-    #    MERGE (m)-[:FILMED_AT]->(l)
-    #    ''', parameters={'location_name': row['location_name'], 'movie_id': row['movie_id']})
-    #
-    ## Query to fetch production companies related to movies
-    #query_prod_companies = """
-    #    SELECT mp.movie_id, pc."name" AS prod_company_name
-    #    FROM "movie-prod_company" mp
-    #    JOIN prod_company pc ON pc.id = mp.prod_company_id
-    #"""
-    #df_prod_companies = pd.read_sql(query_prod_companies, con=engine)
-    #
-    ## Create production company nodes and relationships
-    #for _, row in df_prod_companies.iterrows():
-    #    tx.evaluate('''
-    #    MERGE (pc:ProdCompany {name: $prod_company_name})
-    #    MATCH (m:Movie {id: $movie_id})
-    #    WITH m
-    #    MERGE (m)-[:PRODUCED_BY]->(pc)
-    #    ''', parameters={'prod_company_name': row['prod_company_name'], 'movie_id': row['movie_id']})
+        # Créer une transaction dans Neo4j pour ce lot
+        tx = graph.begin()
 
-    # Commit the transaction
-    tx.commit()
+        # Traitement par lot pour les films
+        tx.evaluate('''
+        UNWIND $movies AS movie
+        MERGE (m:Movie {id: movie.id, original_title: movie.original_title, release_date: movie.release_date, runtime: movie.runtime, vote_average: movie.vote_average, budget: movie.budget, revenue: movie.revenue})
+        ''', parameters={"movies": batch.to_dict(orient="records")})
 
-    # Dispose the engine connection
+        print("movie:" + str(start))               
+
+        # Récupérer les genres
+        query_genres = """
+            SELECT g."name", mg.movie_id
+            FROM genre g
+            JOIN "movie-genre" mg ON g.id = mg.genre_id
+            WHERE mg.movie_id IN 
+        """
+        movie_ids = batch['id'].tolist()
+        query_genres += str(tuple(movie_ids))
+        df_genres = pd.read_sql(query_genres, con=engine)
+
+        # Création des genres et des relations
+        tx.evaluate('''
+        UNWIND $genres AS genre
+        MATCH (m:Movie {id: genre.movie_id})
+        WITH m, genre
+        MERGE (g:Genre {name: genre.name})
+        MERGE (m)-[:HAS_GENRE]->(g)
+        ''', parameters={"genres": df_genres.to_dict(orient="records")})
+
+        print("genre:" + str(start))
+        
+        # Récupérer les mots-clés
+        query_keywords = """
+            SELECT k."name", mk.movie_id
+            FROM keyword k
+            JOIN "movie-keyword" mk ON k.id = mk.keyword_id
+            WHERE mk.movie_id IN 
+        """
+        query_keywords += str(tuple(movie_ids))
+        df_keywords = pd.read_sql(query_keywords, con=engine)
+        
+        # Création des mots-clés et des relations
+        tx.evaluate('''
+        UNWIND $keywords AS keyword
+        MATCH (m:Movie {id: keyword.movie_id})
+        WITH m, keyword
+        MERGE (k:Keyword {name: keyword.name})
+        MERGE (m)-[:HAS_KEYWORD]->(k)
+        ''', parameters={"keywords": df_keywords.to_dict(orient="records")})
+
+        print("keyword:" + str(start))
+        
+        # Récupérer les sociétés de production
+        query_prod_companies = """
+            SELECT p."name", mp.movie_id
+            FROM prod_company p
+            JOIN "movie-prod_company" mp ON p.id = mp.prod_company_id
+            WHERE mp.movie_id IN 
+        """
+        query_prod_companies += str(tuple(movie_ids))
+        df_prod_companies = pd.read_sql(query_prod_companies, con=engine)
+        
+        # Création des sociétés de production et des relations
+        tx.evaluate('''
+        UNWIND $prod_companies AS prod_company
+        MATCH (m:Movie {id: prod_company.movie_id})
+        WITH m, prod_company
+        MERGE (p:ProdCompany {name: prod_company.name})
+        MERGE (m)-[:HAS_PROD_COMPANY]->(p)
+        ''', parameters={"prod_companies": df_prod_companies.to_dict(orient="records")})
+
+        print("prodcompany:" + str(start))
+        
+        # Récupérer les lieux
+        query_locations = """
+            SELECT l."name", ml.movie_id
+            FROM location l
+            JOIN "movie-location" ml ON l.id = ml.location_id
+            WHERE ml.movie_id IN 
+        """
+        query_locations += str(tuple(movie_ids))
+        df_locations = pd.read_sql(query_locations, con=engine)
+        
+        # Création des lieux et des relations
+        tx.evaluate('''
+        UNWIND $locations AS location
+        MATCH (m:Movie {id: location.movie_id})
+        WITH m, location
+        MERGE (l:Location {name: location.name})
+        MERGE (m)-[:HAS_LOCATION]->(l)
+        ''', parameters={"locations": df_locations.to_dict(orient="records")})
+
+        print("location:" + str(start))
+        
+        # Valider la transaction pour ce lot
+        tx.commit()
+
+    # Fermer la connexion PostgreSQL
     engine.dispose()
 
-# Node to create the graph in Neo4j
+
+    
 create_graph_node = PythonOperator(
     task_id="create_graph_from_postgres",
     dag=production_dag,
-    python_callable=_create_graph_from_postgres,
+    python_callable=_create_graph_from_postgres_batch,
     op_kwargs={
         "pg_user": POSTGRES_USER,
         "pg_pwd": POSTGRES_PSWD,
@@ -172,13 +202,26 @@ create_graph_node = PythonOperator(
         "pg_db": POSTGRES_DB,
         "neo_host": NEO4J_HOST,
         "neo_port": NEO4J_PORT,
+        "batch_size" : 1000,
     },
 )
 
-# End node
-end_node = EmptyOperator(
-    task_id="end_task", dag=production_dag, trigger_rule="all_success"
+
+### LAUNCH JUPYTER ANALYTICS NOTEBOOK
+notebook_task = PapermillOperator(
+    task_id="run_analytics_notebook",
+    dag=production_dag,
+    trigger_rule="all_success",
+    input_nb="/opt/airflow/data/analytics.ipynb",
+    output_nb="/opt/airflow/results/out.ipynb",
+    parameters={},
 )
 
-# Set the task sequence
-start_node >> create_graph_node >> end_node
+
+### END
+end_node = EmptyOperator(
+    task_id="end", dag=production_dag, trigger_rule="all_success"
+)
+
+### SET THE TASK SEQUENCE
+start_node >> create_graph_node >> notebook_task >> end_node
