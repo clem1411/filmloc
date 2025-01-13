@@ -12,3 +12,5 @@ ipython-cypher
 python-dotenv
 #nbconvert
 #imgkit
+scikit-learn
+fuzzywuzzy

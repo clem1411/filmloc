@@ -29,3 +29,21 @@ We wanted to work on data about movies and more importantly which factor could i
 ## Ingestion phase
 
 The first dag is responsible for collecting the data. The choice that was made was to retrieve the data from kaggle then use these data for our query in wikidata and finally we use it in our prompt for Grok AI. The down half of the picture shows how the data is collected :
+
+![Ingestion graph](images/ingestion.png)
+
+NB : We're using redis to store the data between the different steps of the ingestion phase.
+
+## Staging phase
+
+We have three different data sources: Kaggle, Wikidata, and Grok AI. To create a complete dataset, we need to merge these sources. This task is handled by the second DAG, which is responsible for extracting data from our MongoDB database, cleaning it, and creating dataframes that will be used to construct the final dataset and align it with the desired schema.
+
+The lower half of the diagram illustrates the data merging and cleaning process, showing how the different sources are integrated and prepared.
+
+![alt text](images/staging.png)
+
+The resulting schema is the following :
+
+![alt text](images/schema.png)
+
+## Production phase
