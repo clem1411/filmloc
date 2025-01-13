@@ -65,6 +65,8 @@ def _create_graph_from_postgres_batch(
     # Connexion à Neo4j
     graph = Graph(f"bolt://{neo_host}:{neo_port}")
 
+    graph.delete_all()
+
     # Interroger les films et leurs données associées
     query_movies = """
         SELECT m.id, m.original_title, m.release_date, m.runtime, m.vote_average, m.budget, m.revenue
