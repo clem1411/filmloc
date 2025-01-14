@@ -28,7 +28,11 @@ We wanted to work on data about movies and more importantly which factor could i
 
 ## Ingestion phase
 
-The first dag is responsible for collecting the data. The choice that was made was to retrieve the data from kaggle then use these data for our query in wikidata and finally we use it in our prompt for Grok AI. The down half of the picture shows how the data is collected :
+The first dag is responsible for cleaning the data in the csv file that we manually downloaded from kaggle.
+
+![movie_csv dag](images/movie_dag.png)
+
+The second dag is responsible for collecting the data. The choice that was made was to retrieve the data from kaggle then use these data for our query in wikidata and finally we use it in our prompt for Grok AI. The down half of the picture shows how the data is collected :
 
 ![Ingestion graph](images/ingestion.png)
 
@@ -54,7 +58,7 @@ In this dag we convert our postgreSQL data into a graph database. We use the dat
 
 Here a visualisation of a part of the graph :
 
-![Graphvisu](images/Graphvisu.png)
+![Graphvisu](images/GraphVisu.png)
 
 We then analyse this graph to answer the questions we asked ourselves. For that purpose, we created a Jupyter notebook that connects to the Neo4j database and retrieves the data we need to answer the questions. We plot the results in the notebook. The output is stored in the results folder in the file named out.ipynb.
 
@@ -67,3 +71,13 @@ Here's an example of the output :
 - We could add more data sources to have a more complete dataset.
 - Improve the way we retrieve famous places appearing in movies and how we clean the output of the AI
 - Do more advanced analysis on the graph to be able to give a more precise answer to the questions we asked ourselves.
+
+## How to run the project
+
+- Run docker compose to start the different services : `docker-compose up`
+- Run the different dags in the following order : ingestion, staging, production
+
+### Advice
+
+- Ensure that enough RAM is allocated (8GB) to Docker for staging, as there are risks of crashes otherwise.
+- For ingestion, you have to add .env file in the dags folder with your grokai token. Warning : the API is not free, you have to pay for it.
