@@ -40,10 +40,30 @@ We have three different data sources: Kaggle, Wikidata, and Grok AI. To create a
 
 The lower half of the diagram illustrates the data merging and cleaning process, showing how the different sources are integrated and prepared.
 
-![alt text](images/staging.png)
+![staging DAG](images/staging.png)
 
 The resulting schema is the following :
 
-![alt text](images/schema.png)
+![schema](images/schema.png)
 
 ## Production phase
+
+In this dag we convert our postgreSQL data into a graph database. We use the data from the previous step to create nodes and edges in the graph. We use the Neo4j database to store the data.
+
+![production DAG](images/prodDAG.png)
+
+Here a visualisation of a part of the graph :
+
+![Graphvisu](images/Graphvisu.png)
+
+We then analyse this graph to answer the questions we asked ourselves. For that purpose, we created a Jupyter notebook that connects to the Neo4j database and retrieves the data we need to answer the questions. We plot the results in the notebook. The output is stored in the results folder in the file named out.ipynb.
+
+Here's an example of the output :
+
+![output for worst rating](images/worst_rating.png)
+
+## Next steps
+
+- We could add more data sources to have a more complete dataset.
+- Improve the way we retrieve famous places appearing in movies and how we clean the output of the AI
+- Do more advanced analysis on the graph to be able to give a more precise answer to the questions we asked ourselves.
